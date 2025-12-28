@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { sendMessage, qrCode, connectionStatus } from './whatsapp';
+import { sendMessage, qrCode, connectionStatus, logoutWhatsApp } from './whatsapp';
 import QRCode from 'qrcode';
 
 const router = Router();
@@ -53,6 +53,17 @@ router.get('/qr', checkApiKey, async (req, res) => {
         res.json({ qrImage, status: connectionStatus });
     } catch (error) {
         res.status(500).json({ error: 'Failed to generate QR image' });
+    }
+});
+
+// Logout Endpoint
+router.post('/logout', checkApiKey, async (req, res) => {
+    try {
+        const result = await logoutWhatsApp();
+        res.json(result);
+    } catch (error: any) {
+        console.error('Logout error:', error);
+        res.status(500).json({ error: error.message || 'Failed to logout' });
     }
 });
 

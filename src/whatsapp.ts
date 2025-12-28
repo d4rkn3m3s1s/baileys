@@ -93,3 +93,30 @@ export async function sendMessage(phone: string, text: string) {
     await sock.sendMessage(jid, { text });
     return { success: true, jid };
 }
+
+export async function logoutWhatsApp() {
+    if (!sock) throw new Error('WhatsApp service not connected');
+
+    try {
+        await sock.logout();
+        sock = null;
+        qrCode = null;
+        connectionStatus = 'disconnected';
+
+        // Delete auth folder to completely reset
+        const authPath = process.env.AUTH_PATH || './baileys_auth_new';
+        if (fs.existsSync(authPath)) {
+            fs.rmSync(authPath, { recursive: true, force: true });
+        }
+
+        // Reconnect to get new QR
+        setTimeout(() => {
+            connectToWhatsApp();
+        }, 2000);
+
+        return { success: true, message: 'Logged out successfully' };
+    } catch (error) {
+        console.error('Logout error:', error);
+        throw error;
+    }
+}
