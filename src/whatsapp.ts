@@ -41,7 +41,7 @@ export async function connectToWhatsApp() {
         console.log(`using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
         // Auth folder path - MUST match the Docker volume path or local path
-        const authPath = process.env.AUTH_PATH || './baileys_auth_new';
+        const authPath = process.env.AUTH_PATH || './baileys_auth_info';
 
         if (!fs.existsSync(authPath)) {
             fs.mkdirSync(authPath, { recursive: true });
@@ -49,17 +49,16 @@ export async function connectToWhatsApp() {
 
         const { state, saveCreds } = await useMultiFileAuthState(authPath);
 
+        console.log(`WhatsApp connection request starting... (Auth: ${authPath})`);
         connectionStatus = 'initializing';
 
         sock = makeWASocket({
             version,
-            logger: pino({ level: 'silent' }) as any,
+            logger: pino({ level: 'info' }) as any, // Increased log level for debugging
             auth: state,
-            // Using Ubuntu/Chrome signature reduces 405 errors
             browser: Browsers.ubuntu('Chrome'),
-            // Fix for some connection issues
-            connectTimeoutMs: 60000,
-            defaultQueryTimeoutMs: 60000,
+            connectTimeoutMs: 120000, // Doubled timeout
+            defaultQueryTimeoutMs: 120000,
             keepAliveIntervalMs: 10000,
             emitOwnEvents: false,
             retryRequestDelayMs: 250
@@ -96,6 +95,78 @@ export async function connectToWhatsApp() {
         });
 
         sock.ev.on('creds.update', saveCreds);
+
+        // Listen for messages
+        sock.ev.on('messages.upsert', async (m: any) => {
+            if (m.type === 'notify') {
+                for (const msg of m.messages) {
+                    if (!msg.message) continue;
+
+                    const text = msg.message.conversation ||
+                        msg.message.extendedTextMessage?.text ||
+                        msg.message.imageMessage?.caption;
+
+                    if (!text) continue;
+
+                    console.log('NEW MESSAGE RECEIVED:', {
+                        from: msg.key.remoteJid,
+                        me: msg.key.fromMe,
+                        text: text
+                    });
+
+                    // Send to webhook
+                    try {
+                        const WEBHOOK_URL = process.env.WEBHOOK_URL || 'http://localhost:3000/api/whatsapp/webhook';
+                        const API_KEY = process.env.API_KEY || 'changeme';
+
+                        const controller = new AbortController();
+                        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+                        // Baileys timestamp handling (can be absolute or Long object)
+                        let safeTimestamp = msg.messageTimestamp;
+                        if (typeof safeTimestamp === 'object' && safeTimestamp !== null && 'toNumber' in safeTimestamp) {
+                            safeTimestamp = (safeTimestamp as any).toNumber();
+                        } else if (typeof safeTimestamp === 'undefined') {
+                            safeTimestamp = Math.floor(Date.now() / 1000);
+                        }
+
+                        console.log(`Sending webhook to: ${WEBHOOK_URL}`);
+                        try {
+                            const response = await fetch(WEBHOOK_URL, {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'x-api-key': API_KEY
+                                },
+                                body: JSON.stringify({
+                                    remoteJid: msg.key.remoteJid,
+                                    fromMe: msg.key.fromMe,
+                                    text: text,
+                                    senderName: msg.pushName || null,
+                                    timestamp: Number(safeTimestamp)
+                                }),
+                                signal: controller.signal
+                            });
+                            clearTimeout(timeoutId);
+
+                            const responseText = await response.text();
+
+                            if (!response.ok) {
+                                console.error(`Webhook Error [${response.status}]: ${responseText}`);
+                                throw new Error(`Webhook failed with status: ${response.status}`);
+                            }
+
+                            console.log('Webhook sent successfully. Response:', responseText);
+                        } catch (error: any) {
+                            clearTimeout(timeoutId);
+                            throw error;
+                        }
+                    } catch (e: any) {
+                        console.error('Failed to notify webhook:', e.message);
+                    }
+                }
+            }
+        });
     } catch (error) {
         console.error('Failed to connect to WhatsApp:', error);
         isConnecting = false;
@@ -141,7 +212,7 @@ export async function logoutWhatsApp() {
         }
 
         // Delete auth folder to completely reset
-        const authPath = process.env.AUTH_PATH || './baileys_auth_new';
+        const authPath = process.env.AUTH_PATH || './baileys_auth_info';
         if (fs.existsSync(authPath)) {
             console.log('Removing auth folder:', authPath);
             fs.rmSync(authPath, { recursive: true, force: true });
